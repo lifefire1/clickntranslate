@@ -52,7 +52,9 @@ SETTINGS_TEXT = {
         "translation_display": "Translation display:",
         "display_popup": "Popup window",
         "display_overlay": "Overlay",
-        "overlay_opacity": "Overlay opacity:"
+        "overlay_opacity": "Overlay opacity:",
+        "live_interval": "Live update interval:",
+        "live_interval_sec": "sec"
     },
     "ru": {
         "autostart": "Запускать вместе с ОС",
@@ -80,7 +82,9 @@ SETTINGS_TEXT = {
         "translation_display": "Отображение перевода:",
         "display_popup": "Отдельное окно",
         "display_overlay": "Оверлей",
-        "overlay_opacity": "Прозрачность оверлея:"
+        "overlay_opacity": "Прозрачность оверлея:",
+        "live_interval": "Интервал Live режима:",
+        "live_interval_sec": "сек"
     }
 }
 
@@ -343,6 +347,36 @@ class SettingsWindow(QWidget):
         row_display.addStretch()
 
         self.main_layout.addLayout(row_display)
+
+        # --- Настройка интервала Live Translation ---
+        row_live = QHBoxLayout()
+        row_live.setContentsMargins(0, 0, 0, 0)
+        row_live.setSpacing(8)
+
+        live_label = QLabel(SETTINGS_TEXT[lang]["live_interval"])
+        live_label.setStyleSheet("margin:0; padding:0; padding-top: 2px;")
+        live_label.setFixedWidth(140)
+        live_label.setFixedHeight(38)
+        live_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        from PyQt5.QtWidgets import QSpinBox
+        self.live_interval_spinbox = QSpinBox()
+        self.live_interval_spinbox.setMinimum(1)
+        self.live_interval_spinbox.setMaximum(10)
+        self.live_interval_spinbox.setValue(self.parent.config.get("live_translation_interval", 3))
+        self.live_interval_spinbox.setFixedWidth(60)
+        self.live_interval_spinbox.setFixedHeight(28)
+        self.live_interval_spinbox.valueChanged.connect(lambda val: self.auto_save_setting("live_translation_interval", val))
+
+        live_sec_label = QLabel(SETTINGS_TEXT[lang]["live_interval_sec"])
+        live_sec_label.setFixedWidth(30)
+
+        row_live.addWidget(live_label)
+        row_live.addWidget(self.live_interval_spinbox, alignment=Qt.AlignVCenter)
+        row_live.addWidget(live_sec_label, alignment=Qt.AlignVCenter)
+        row_live.addStretch()
+
+        self.main_layout.addLayout(row_live)
 
         # --- Остальные чекбоксы (start_minimized уже добавлен выше) ---
 

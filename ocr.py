@@ -539,10 +539,11 @@ class ScreenCaptureOverlay(QWidget):
             self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/Russian_flag.png")), "RU", "ru")
             self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/American_flag.png")), "EN", "en")
         else:
-            # В режиме translate показываем направление перевода
-            self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/Russian_flag.png")), "RU → EN", "ru")
-            self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/American_flag.png")), "EN → RU", "en")
-        
+            # В режиме translate/live показываем направление перевода
+            prefix = "🔴 " if self.mode == "live" else ""
+            self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/Russian_flag.png")), f"{prefix}RU → EN", "ru")
+            self.lang_combo.addItem(QtGui.QIcon(resource_path("icons/American_flag.png")), f"{prefix}EN → RU", "en")
+
         # Устанавливаем индекс на основе self.current_language (сохраненного)
         if self.mode == "copy":
             # В режиме copy есть AUTO, RU, EN (индексы 0, 1, 2)
@@ -555,7 +556,7 @@ class ScreenCaptureOverlay(QWidget):
             else:
                 default_index = 0  # По умолчанию AUTO
         else:
-            # В режиме translate только RU, EN (индексы 0, 1)
+            # В режиме translate/live только RU, EN (индексы 0, 1)
             default_index = 0 if self.current_language == "ru" else 1
         self.lang_combo.setCurrentIndex(default_index)
         
@@ -621,8 +622,8 @@ class ScreenCaptureOverlay(QWidget):
                 background-color: rgba(80, 130, 200, 180);
             }
         """)
-        # Размер зависит от режима (translate имеет более длинный текст)
-        combo_width = 180 if self.mode == "translate" else 160
+        # Размер зависит от режима (translate/live имеет более длинный текст)
+        combo_width = 180 if self.mode in ("translate", "live") else 160
         self.lang_combo.setFixedSize(combo_width, 56)
         self.lang_combo.move((self.width() - self.lang_combo.width()) // 2, 20)
         # Показываем комбобокс (в режиме copy есть опция AUTO)
@@ -1212,6 +1213,61 @@ class ScreenCaptureOverlay(QWidget):
                         pass
                     # Сохраняем переводы в историю (исходный текст и перевод)
                     save_translation_history(text, translated_text, target_code)
+                self.close()
+            elif self.mode == "live":
+                # Режим непрерывного чтения (Live Translation)
+                from translater import translate_text
+                lang_code = self.lang_combo.currentData() or "ru"
+                if lang_code == "ru":
+                    source_code, target_code = "ru", "en"
+                else:
+                    source_code, target_code = "en", "ru"
+
+                logging.info(f"🔴 Starting Live Translation mode ({source_code.upper()} → {target_code.upper()})...")
+                try:
+                    translated_text = translate_text(text, source_code, target_code)
+                    if translated_text:
+                        logging.info(f"✅ Initial translation completed ({len(translated_text)} chars)")
+                    else:
+                        logging.warning("⚠️ Initial translation returned empty result")
+                        self.close()
+                        return
+                except Exception as e:
+                    logging.error(f"❌ Initial translation error: {e}")
+                    QMessageBox.warning(self, "Ошибка перевода", str(e))
+                    self.close()
+                    return
+
+                # Получаем координаты выделения
+                coords = getattr(self, 'selection_coords', None)
+                if not coords:
+                    logging.error("No selection coords for live mode")
+                    self.close()
+                    return
+
+                # Запускаем LiveTranslationManager
+                config = get_cached_ocr_config()
+                interval = config.get("live_translation_interval", 3)
+
+                from main import LiveTranslationManager
+                # Получаем ссылку на главное окно для хранения менеджера
+                app = QApplication.instance()
+                main_window = None
+                for widget in app.topLevelWidgets():
+                    if widget.__class__.__name__ == "DarkThemeApp":
+                        main_window = widget
+                        break
+
+                if main_window:
+                    main_window.live_manager = LiveTranslationManager(main_window)
+                    main_window.live_manager.start(
+                        coords['x'], coords['y'], coords['width'], coords['height'],
+                        initial_ocr_text=text,
+                        initial_translation=translated_text,
+                        interval_sec=interval
+                    )
+                    logging.info(f"🔴 Live Translation started (interval: {interval}s)")
+
                 self.close()
             else:
                 try:

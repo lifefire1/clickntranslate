@@ -38,6 +38,8 @@ DEFAULT_CONFIG = {
     "translation_mode": "English",
     "copy_hotkey": "Ctrl+Alt+C",
     "translate_hotkey": "Ctrl+Alt+T",
+    "live_hotkey": "Ctrl+Alt+L",
+    "live_translation_interval": 3,
     "notifications": False,
     "history": False,
     "start_minimized": False,
@@ -554,6 +556,14 @@ class DarkThemeApp(QMainWindow):
             self.translate_hotkey_thread = HotkeyListenerThread(translate_hotkey, self.launch_translate, hotkey_id=2)
             self.translate_hotkey_thread.start()
 
+        live_hotkey = self.config.get("live_hotkey", DEFAULT_CONFIG.get("live_hotkey", ""))
+        if live_hotkey:
+            self.live_hotkey_thread = HotkeyListenerThread(live_hotkey, self.launch_live_translate, hotkey_id=3)
+            self.live_hotkey_thread.start()
+
+        # Менеджер Live Translation
+        self.live_manager = None
+
         self.HotkeyListenerThread = HotkeyListenerThread
 
         self.setWindowIcon(QIcon(resource_path("icons/icon.ico")))
@@ -773,6 +783,17 @@ class DarkThemeApp(QMainWindow):
                 self._start_external("ocr.py", "translate")
             if not self.config.get("keep_visible_on_ocr", False):
                 self.hide()
+
+    def launch_live_translate(self):
+        """Запуск режима непрерывного чтения (Live Translation)."""
+        print("launch_live_translate called")
+        try:
+            from ocr import run_screen_capture
+            if not self.config.get("keep_visible_on_ocr", False):
+                self.hide()
+            run_screen_capture(mode="live")
+        except Exception as e:
+            print(f"Error launching live translate: {e}")
 
     def restart_hotkey_listener(self):
         self.hotkey_thread = HotkeyListenerThread(self.config.get("ocr_hotkeys", "Ctrl+O"), self.launch_ocr)
@@ -1452,6 +1473,17 @@ class DarkThemeApp(QMainWindow):
                 self.translate_hotkey_thread.join(timeout=0.5)
         except Exception as e:
             print(f"Error stopping translate hotkey thread: {e}")
+        try:
+            if hasattr(self, "live_hotkey_thread") and self.live_hotkey_thread is not None:
+                self.live_hotkey_thread.stop()
+                self.live_hotkey_thread.join(timeout=0.5)
+        except Exception as e:
+            print(f"Error stopping live hotkey thread: {e}")
+        try:
+            if hasattr(self, "live_manager") and self.live_manager is not None:
+                self.live_manager.stop()
+        except Exception as e:
+            print(f"Error stopping live manager: {e}")
         self.save_config()
         self.tray_icon.hide()  # Убираем иконку из трея
         event.accept()
@@ -1621,6 +1653,271 @@ class TranslationOverlay(QWidget):
 
     def mousePressEvent(self, event):
         self.close()
+
+
+# --- Live Translation (непрерывное чтение) ---
+class LiveTranslationOverlay(TranslationOverlay):
+    """Оверлей с поддержкой Live режима и индикатором."""
+
+    def __init__(self, translated_text, x, y, width, height, opacity=85, theme='Темная', font_size=14, line_height=1.5, live_manager=None):
+        super().__init__(translated_text, x, y, width, height, opacity, theme, font_size, line_height)
+        self.live_manager = live_manager
+
+        # Индикатор Live режима
+        self.live_indicator = QLabel("● LIVE", self)
+        self.live_indicator.setStyleSheet("""
+            QLabel {
+                color: #ff4444;
+                background-color: rgba(0, 0, 0, 150);
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+        """)
+        self.live_indicator.adjustSize()
+        self.live_indicator.move(5, 5)
+        self.live_indicator.show()
+
+        # Пульсация индикатора
+        self.pulse_timer = QTimer(self)
+        self.pulse_timer.timeout.connect(self._pulse)
+        self.pulse_timer.start(500)
+        self.pulse_state = True
+
+    def _pulse(self):
+        """Пульсация индикатора Live."""
+        self.pulse_state = not self.pulse_state
+        color = "#ff4444" if self.pulse_state else "#aa2222"
+        self.live_indicator.setStyleSheet(f"""
+            QLabel {{
+                color: {color};
+                background-color: rgba(0, 0, 0, 150);
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+        """)
+
+    def update_translation(self, translated_text, font_size, line_height):
+        """Обновить перевод в оверлее."""
+        self.translated_text = translated_text
+        self.current_font_size = font_size
+        self.current_line_height = line_height
+        self._update_html()
+
+    def closeEvent(self, event):
+        """Остановить Live режим при закрытии."""
+        if self.live_manager:
+            self.live_manager.stop()
+        self.pulse_timer.stop()
+        super().closeEvent(event)
+
+    def mousePressEvent(self, event):
+        """Закрыть по клику и остановить Live."""
+        if self.live_manager:
+            self.live_manager.stop()
+        self.close()
+
+
+class LiveTranslationManager:
+    """Менеджер режима непрерывного чтения."""
+
+    MAX_CACHE_SIZE = 100
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._tick)
+
+        self.capture_area = None  # (x, y, width, height)
+        self.overlay = None
+        self.last_ocr_hash = None
+        self.last_ocr_text = None
+        self.translation_cache = {}  # hash -> (translated_text, ocr_text)
+
+        self.theme = "Темная"
+        self.lang = "ru"
+        self.opacity = 85
+
+    def start(self, x, y, width, height, initial_ocr_text, initial_translation, interval_sec=3):
+        """Запускает режим непрерывного чтения."""
+        import hashlib
+
+        self.capture_area = (x, y, width, height)
+
+        config = get_cached_config()
+        self.theme = config.get("theme", "Темная")
+        self.lang = config.get("interface_language", "ru")
+        self.opacity = config.get("overlay_opacity", 85)
+
+        # Начальный хеш и кеш
+        self.last_ocr_text = initial_ocr_text
+        self.last_ocr_hash = hashlib.md5(initial_ocr_text.encode()).hexdigest()
+        self.translation_cache[self.last_ocr_hash] = (initial_translation, initial_ocr_text)
+
+        # Вычисляем метрики шрифта
+        metrics = estimate_font_metrics(initial_ocr_text, initial_translation, height, width)
+
+        # Создаём оверлей
+        self.overlay = LiveTranslationOverlay(
+            initial_translation,
+            x, y, width, height,
+            opacity=self.opacity,
+            theme=self.theme,
+            font_size=metrics['font_size'],
+            line_height=metrics['line_height'],
+            live_manager=self
+        )
+        self.overlay.show()
+
+        # Запускаем таймер
+        self.timer.setInterval(interval_sec * 1000)
+        self.timer.start()
+
+    def stop(self):
+        """Останавливает режим."""
+        self.timer.stop()
+        if self.overlay and self.overlay.isVisible():
+            self.overlay.close()
+        self.overlay = None
+
+    def _tick(self):
+        """Вызывается каждые N секунд."""
+        import hashlib
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QThread
+
+        if not self.capture_area or not self.overlay:
+            return
+
+        x, y, w, h = self.capture_area
+
+        try:
+            # 1. Прячем оверлей чтобы не захватить его на скриншоте
+            self.overlay.setWindowOpacity(0)
+            QApplication.processEvents()
+            QThread.msleep(50)  # Даём ОС время убрать оверлей с экрана
+
+            try:
+                # 2. Скриншот чистой области (без оверлея)
+                screen = QApplication.primaryScreen()
+                screenshot = screen.grabWindow(0, x, y, w, h)
+            finally:
+                # 3. Показываем оверлей обратно (даже при ошибке)
+                self.overlay.setWindowOpacity(1)
+
+            if screenshot.isNull():
+                return
+
+            qimage = screenshot.toImage()
+
+            # 2. OCR
+            ocr_text = self._run_quick_ocr(qimage)
+            if not ocr_text:
+                return
+
+            # 3. Игнорируем промежуточные состояния (анимация перелистывания)
+            if self.last_ocr_text and len(ocr_text.strip()) < len(self.last_ocr_text.strip()) * 0.3:
+                return
+
+            # 4. Хеш текста
+            text_hash = hashlib.md5(ocr_text.encode()).hexdigest()
+
+            # 5. Если текст не изменился — пропускаем
+            if text_hash == self.last_ocr_hash:
+                return
+
+            self.last_ocr_hash = text_hash
+            self.last_ocr_text = ocr_text
+
+            # 6. Проверяем кеш переводов
+            if text_hash in self.translation_cache:
+                translated, _ = self.translation_cache[text_hash]
+            else:
+                # 7. Переводим
+                from translater import translate_text
+                config = get_cached_config()
+
+                # Определяем направление перевода по текущему языку OCR
+                from ocr import get_cached_ocr_config
+                ocr_config = get_cached_ocr_config()
+                ocr_lang = ocr_config.get("last_ocr_language", "ru")
+
+                if ocr_lang == "ru":
+                    source_code, target_code = "ru", "en"
+                else:
+                    source_code, target_code = "en", "ru"
+
+                translated = translate_text(ocr_text, source_code, target_code)
+                if not translated:
+                    return
+
+                # Кешируем
+                self.translation_cache[text_hash] = (translated, ocr_text)
+
+                # Ограничиваем размер кеша
+                if len(self.translation_cache) > self.MAX_CACHE_SIZE:
+                    # Удаляем старейшую запись
+                    oldest_key = next(iter(self.translation_cache))
+                    del self.translation_cache[oldest_key]
+
+            # 8. Обновляем оверлей
+            metrics = estimate_font_metrics(ocr_text, translated, h, w)
+            self.overlay.update_translation(translated, metrics['font_size'], metrics['line_height'])
+
+        except Exception as e:
+            logging.error(f"Live translation tick error: {e}")
+
+    def _run_quick_ocr(self, qimage):
+        """Быстрый OCR без тяжёлой предобработки для Live режима."""
+        try:
+            from ocr import qimage_to_softwarebitmap, _get_windows_ocr_engine, run_ocr_with_engine, _get_ocr_event_loop, get_cached_ocr_config
+            import asyncio
+
+            config = get_cached_ocr_config()
+            ocr_lang = config.get("last_ocr_language", "ru")
+            lang_tag = {"en": "en-US", "ru": "ru-RU"}.get(ocr_lang, "ru-RU")
+
+            # Конвертируем в bitmap
+            bitmap = qimage_to_softwarebitmap(qimage)
+            if not bitmap:
+                return ""
+
+            # Получаем движок OCR
+            engine = _get_windows_ocr_engine(lang_tag)
+            if not engine:
+                return ""
+
+            # Запускаем OCR
+            loop = _get_ocr_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(run_ocr_with_engine(bitmap, engine))
+
+            if not result:
+                return ""
+
+            # Извлекаем текст
+            lines_text = []
+            try:
+                for line in result.lines:
+                    try:
+                        words = list(line.words)
+                        if words:
+                            lines_text.append(" ".join(word.text for word in words))
+                        else:
+                            lines_text.append(line.text)
+                    except:
+                        lines_text.append(line.text)
+            except:
+                return ""
+
+            return "\n".join(lines_text)
+
+        except Exception as e:
+            logging.error(f"Quick OCR error: {e}")
+            return ""
 
 
 def estimate_font_metrics(ocr_text, translated_text, area_height, area_width):
