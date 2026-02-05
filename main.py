@@ -1567,24 +1567,80 @@ def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', 
 
     # Текстовый виджет с прокруткой
     text_browser = QTextBrowser()
-    text_browser.setPlainText(translated_text)
     text_browser.setReadOnly(True)
     text_browser.setOpenExternalLinks(False)
     text_browser.setStyleSheet(f"""
         QTextBrowser {{
-            background-color: {bg_color}; color: {text_color};
-            font-size: 18px; border: none; padding: 5px;
+            background-color: {bg_color};
+            border: none;
+            padding: 4px;
         }}
         QScrollBar:vertical {{
-            background: {scroll_bg}; width: 12px; border-radius: 6px;
+            background: {scroll_bg}; width: 8px; border-radius: 4px;
         }}
         QScrollBar::handle:vertical {{
-            background: {scroll_handle}; border-radius: 6px; min-height: 30px;
+            background: {scroll_handle}; border-radius: 4px; min-height: 20px;
         }}
         QScrollBar::handle:vertical:hover {{ background: {scroll_hover}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
     """)
+
+    # Форматируем текст в HTML с абзацами (OCR-эвристика)
+    # Если строка короче 75% от медианной длины — это конец абзаца
+    import html as html_module
+    normalized_text = translated_text.replace('\r\n', '\n').strip()
+    lines = normalized_text.split('\n')
+
+    # Вычисляем медианную длину строки
+    non_empty_lens = [len(line.strip()) for line in lines if line.strip()]
+    if not non_empty_lens:
+        text_browser.setHtml('')
+    else:
+        sorted_lens = sorted(non_empty_lens)
+        median_len = sorted_lens[len(sorted_lens) // 2]
+        threshold = median_len * 0.75
+
+        paragraphs = []
+        current_para = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                # Пустая строка — разделитель абзацев
+                if current_para:
+                    paragraphs.append(' '.join(current_para))
+                    current_para = []
+                continue
+
+            current_para.append(stripped)
+
+            # Короткая строка — конец абзаца
+            if len(stripped) < threshold:
+                paragraphs.append(' '.join(current_para))
+                current_para = []
+
+        if current_para:
+            paragraphs.append(' '.join(current_para))
+
+        # Собираем HTML
+        html_parts = []
+        for p in paragraphs:
+            if p:
+                escaped = html_module.escape(p)
+                html_parts.append(f'<p style="margin: 10px 0; line-height: 1.6; text-indent: 20px;">{escaped}</p>')
+
+        html_content = f'''
+        <div style="
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 15px;
+            color: {text_color};
+            padding: 12px 16px;
+        ">
+            {''.join(html_parts)}
+        </div>
+        '''
+        text_browser.setHtml(html_content)
     layout.addWidget(text_browser)
 
     # Кнопки
