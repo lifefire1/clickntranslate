@@ -514,6 +514,7 @@ class ScreenCaptureOverlay(QWidget):
         self.start_point = None
         self.end_point = None
         self.last_rect = None
+        self.selection_coords = None  # Координаты для оверлейного режима
         # Загрузка последнего выбранного языка из конфигурации
         config = get_cached_ocr_config()
         self.current_language = config.get("last_ocr_language", "ru")
@@ -865,7 +866,15 @@ class ScreenCaptureOverlay(QWidget):
         global_bottom_right = self.mapToGlobal(rect.bottomRight())
         
         global_rect = QtCore.QRect(global_top_left, global_bottom_right)
-        
+
+        # Сохраняем координаты для оверлейного режима
+        self.selection_coords = {
+            'x': global_rect.x(),
+            'y': global_rect.y(),
+            'width': global_rect.width(),
+            'height': global_rect.height()
+        }
+
         logging.info(f"Selected local rect: {rect}")
         logging.info(f"Mapped global rect: {global_rect}")
         
@@ -1189,9 +1198,12 @@ class ScreenCaptureOverlay(QWidget):
                     theme = config.get("theme", "Темная")
                     lang = config.get("interface_language", "ru")
                     auto_copy = config.get("copy_translated_text", True)
+                    # Получаем координаты выделения для оверлейного режима
+                    coords = getattr(self, 'selection_coords', None)
                     # Ленивый импорт для избежания циклического импорта
                     from main import show_translation_dialog, save_copy_history
-                    show_translation_dialog(self, translated_text, auto_copy=auto_copy, lang=lang, theme=theme)
+                    # text — оригинальный OCR-текст для расчёта размера шрифта в оверлее
+                    show_translation_dialog(self, translated_text, auto_copy=auto_copy, lang=lang, theme=theme, coords=coords, original_text=text)
                     if auto_copy:
                         pyperclip.copy(translated_text)
                         save_copy_history(translated_text)

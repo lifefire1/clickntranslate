@@ -48,7 +48,11 @@ SETTINGS_TEXT = {
         "copy_history_title": "Copy history",
         "history_empty": "History is empty.",
         "history_error": "Error reading history.",
-        "copy_translated_text": "Copy translated text automatically"
+        "copy_translated_text": "Copy translated text automatically",
+        "translation_display": "Translation display:",
+        "display_popup": "Popup window",
+        "display_overlay": "Overlay",
+        "overlay_opacity": "Overlay opacity:"
     },
     "ru": {
         "autostart": "Запускать вместе с ОС",
@@ -72,7 +76,11 @@ SETTINGS_TEXT = {
         "copy_history_title": "История копирований",
         "history_empty": "История пуста.",
         "history_error": "Ошибка чтения истории.",
-        "copy_translated_text": "Копировать сразу переведённый текст"
+        "copy_translated_text": "Копировать сразу переведённый текст",
+        "translation_display": "Отображение перевода:",
+        "display_popup": "Отдельное окно",
+        "display_overlay": "Оверлей",
+        "overlay_opacity": "Прозрачность оверлея:"
     }
 }
 
@@ -277,8 +285,64 @@ class SettingsWindow(QWidget):
         tr_label.setToolTip(tr_tooltips.get(lang, tr_tooltips["en"]))
         self.main_layout.addLayout(row2)
 
-        # --- Подготовим кнопку обновления (перенесена в группу кнопок ниже) ---
-        # Убрали из этой строки
+        # --- Режим отображения перевода и прозрачность оверлея ---
+        row_display = QHBoxLayout()
+        row_display.setContentsMargins(0, 0, 0, 0)
+        row_display.setSpacing(8)
+
+        # Выбор режима отображения
+        display_label = QLabel(SETTINGS_TEXT[lang]["translation_display"])
+        display_label.setStyleSheet("margin:0; padding:0; padding-top: 2px;")
+        display_label.setFixedWidth(140)
+        display_label.setFixedHeight(38)
+        display_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.display_mode_combo = QComboBox()
+        display_modes = [
+            ("popup", SETTINGS_TEXT[lang]["display_popup"]),
+            ("overlay", SETTINGS_TEXT[lang]["display_overlay"])
+        ]
+        for mode_id, mode_label in display_modes:
+            self.display_mode_combo.addItem(mode_label, mode_id)
+        current_mode = self.parent.config.get("translation_display_mode", "popup")
+        for i in range(self.display_mode_combo.count()):
+            if self.display_mode_combo.itemData(i) == current_mode:
+                self.display_mode_combo.setCurrentIndex(i)
+                break
+        self.display_mode_combo.currentIndexChanged.connect(self._on_display_mode_changed)
+        self.display_mode_combo.setFixedWidth(130)
+        self.display_mode_combo.setFixedHeight(32)
+
+        row_display.addWidget(display_label)
+        row_display.addWidget(self.display_mode_combo, alignment=Qt.AlignVCenter)
+        row_display.addItem(QSpacerItem(20, 20, QSizePolicy.Fixed, QSizePolicy.Minimum))
+
+        # Слайдер прозрачности
+        opacity_label = QLabel(SETTINGS_TEXT[lang]["overlay_opacity"])
+        opacity_label.setStyleSheet("margin:0; padding:0; padding-top: 2px;")
+        opacity_label.setFixedWidth(140)
+        opacity_label.setFixedHeight(38)
+        opacity_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        from PyQt5.QtWidgets import QSlider
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setMinimum(20)
+        self.opacity_slider.setMaximum(100)
+        self.opacity_slider.setValue(self.parent.config.get("overlay_opacity", 85))
+        self.opacity_slider.setFixedWidth(100)
+        self.opacity_slider.setFixedHeight(24)
+        self.opacity_slider.valueChanged.connect(lambda val: self.auto_save_setting("overlay_opacity", val))
+
+        self.opacity_value_label = QLabel(f"{self.opacity_slider.value()}%")
+        self.opacity_value_label.setFixedWidth(35)
+        self.opacity_slider.valueChanged.connect(lambda val: self.opacity_value_label.setText(f"{val}%"))
+
+        row_display.addWidget(opacity_label)
+        row_display.addWidget(self.opacity_slider, alignment=Qt.AlignVCenter)
+        row_display.addWidget(self.opacity_value_label, alignment=Qt.AlignVCenter)
+        row_display.addStretch()
+
+        self.main_layout.addLayout(row_display)
 
         # --- Остальные чекбоксы (start_minimized уже добавлен выше) ---
 
@@ -859,6 +923,10 @@ class SettingsWindow(QWidget):
         else:
             value = "argos"
         self.auto_save_setting("translator_engine", value)
+
+    def _on_display_mode_changed(self, idx):
+        mode = self.display_mode_combo.itemData(idx)
+        self.auto_save_setting("translation_display_mode", mode)
 
     def start_download_thread(self):
         """Скачать portable-версию Tesseract и две языковые модели (eng, rus)."""

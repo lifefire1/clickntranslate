@@ -1538,24 +1538,237 @@ class DarkThemeApp(QMainWindow):
     def minimize_to_tray(self):
         self.hide()
 
+# --- Оверлейное окно для отображения перевода поверх оригинала ---
+class TranslationOverlay(QWidget):
+    """Окно-оверлей для показа перевода поверх выделенной области."""
+
+    def __init__(self, translated_text, x, y, width, height, opacity=85, theme='Темная', font_size=14, line_height=1.5):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setGeometry(x, y, width, height)
+
+        # Сохраняем для перерендеринга при изменении шрифта
+        self.translated_text = translated_text
+        self.current_font_size = font_size
+        self.current_line_height = line_height
+
+        # Цвета по теме
+        if theme == "Темная":
+            bg_r, bg_g, bg_b = 30, 30, 46
+            self.text_color = "#E0E0E0"
+            scroll_bg, scroll_handle = "#2E2E3E", "#555"
+        else:
+            bg_r, bg_g, bg_b = 255, 255, 255
+            self.text_color = "#1a1a1a"
+            scroll_bg, scroll_handle = "#f0f0f0", "#ccc"
+
+        alpha = int(opacity * 2.55)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.text_browser = QTextBrowser()
+        self.text_browser.setReadOnly(True)
+        self.text_browser.setOpenExternalLinks(False)
+        self.text_browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: rgba({bg_r}, {bg_g}, {bg_b}, {alpha});
+                border: none;
+                padding: 8px;
+            }}
+            QScrollBar:vertical {{
+                background: {scroll_bg}; width: 8px; border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {scroll_handle}; border-radius: 4px; min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
+
+        self._update_html()
+        layout.addWidget(self.text_browser)
+
+    def _update_html(self):
+        """Обновить HTML с текущим размером шрифта."""
+        html_content = format_translation_html(
+            self.translated_text,
+            self.text_color,
+            self.current_font_size,
+            self.current_line_height
+        )
+        self.text_browser.setHtml(html_content)
+
+    def wheelEvent(self, event):
+        """Ctrl + колесо = изменить размер шрифта."""
+        if event.modifiers() == Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.current_font_size = min(self.current_font_size + 1, 48)
+            else:
+                self.current_font_size = max(self.current_font_size - 1, 8)
+            self._update_html()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        self.close()
+
+
+def estimate_font_metrics(ocr_text, translated_text, area_height, area_width):
+    """Оценивает размер шрифта с учётом длины перевода."""
+    lines = [line for line in ocr_text.split('\n') if line.strip()]
+    line_count = len(lines)
+
+    if line_count == 0:
+        return {'font_size': 14, 'line_height': 1.5}
+
+    # Высота строки в оригинале
+    line_height_px = area_height / line_count
+
+    # Базовый размер шрифта — 60% от высоты строки (было 72%, слишком много)
+    font_size_px = int(line_height_px * 0.60)
+
+    # Компенсация длины перевода: если перевод длиннее оригинала,
+    # нужно уменьшить шрифт чтобы текст поместился
+    original_len = len(ocr_text.replace('\n', ' ').strip())
+    translated_len = len(translated_text.replace('\n', ' ').strip())
+
+    if original_len > 0 and translated_len > original_len:
+        # Коэффициент удлинения, но не меньше 0.7 (не уменьшаем шрифт более чем на 30%)
+        length_ratio = max(0.7, original_len / translated_len)
+        font_size_px = int(font_size_px * length_ratio)
+
+    # Ограничения
+    font_size_px = max(9, min(font_size_px, 40))
+
+    line_height_ratio = round(line_height_px / max(font_size_px, 1), 2)
+    line_height_ratio = max(1.2, min(line_height_ratio, 2.0))
+
+    return {
+        'font_size': font_size_px,
+        'line_height': line_height_ratio,
+    }
+
+
+def format_translation_html(text, text_color="#E0E0E0", font_size=15, line_height=1.6):
+    """Форматирует текст перевода в HTML с абзацами (OCR-эвристика).
+
+    Если строка короче 75% от медианной длины — это конец абзаца.
+    """
+    import html as html_module
+    normalized_text = text.replace('\r\n', '\n').strip()
+    lines = normalized_text.split('\n')
+
+    non_empty_lens = [len(line.strip()) for line in lines if line.strip()]
+    if not non_empty_lens:
+        return ''
+
+    sorted_lens = sorted(non_empty_lens)
+    median_len = sorted_lens[len(sorted_lens) // 2]
+    threshold = median_len * 0.75
+
+    paragraphs = []
+    current_para = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if current_para:
+                paragraphs.append(' '.join(current_para))
+                current_para = []
+            continue
+
+        current_para.append(stripped)
+        if len(stripped) < threshold:
+            paragraphs.append(' '.join(current_para))
+            current_para = []
+
+    if current_para:
+        paragraphs.append(' '.join(current_para))
+
+    html_parts = []
+    for p in paragraphs:
+        if p:
+            escaped = html_module.escape(p)
+            html_parts.append(f'<p style="margin: 6px 0; line-height: {line_height};">{escaped}</p>')
+
+    return f'''
+    <div style="
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: {font_size}px;
+        color: {text_color};
+        padding: 8px 10px;
+    ">
+        {''.join(html_parts)}
+    </div>
+    '''
+
+
 # --- Универсальный диалог перевода ---
-def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', theme='Темная'):
+def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', theme='Темная', coords=None, original_text=None):
+    config = get_cached_config()
+    display_mode = config.get("translation_display_mode", "popup")
+    overlay_opacity = config.get("overlay_opacity", 85)
+
+    # Автокопирование
+    if auto_copy:
+        pyperclip.copy(translated_text)
+
+    # Определяем цвет текста по теме
+    text_color = "#E0E0E0" if theme == "Темная" else "#1a1a1a"
+
+    # --- Режим оверлея ---
+    if display_mode == "overlay" and coords:
+        # Вычисляем метрики шрифта по оригинальному тексту OCR и длине перевода
+        if original_text and coords.get('height'):
+            metrics = estimate_font_metrics(original_text, translated_text, coords['height'], coords['width'])
+            font_size = metrics['font_size']
+            line_height = metrics['line_height']
+        else:
+            font_size, line_height = 15, 1.5
+
+        overlay = TranslationOverlay(
+            translated_text,
+            coords['x'], coords['y'], coords['width'], coords['height'],
+            opacity=overlay_opacity,
+            theme=theme,
+            font_size=font_size,
+            line_height=line_height
+        )
+        overlay.show()
+        # Храним ссылку чтобы окно не уничтожилось
+        if not hasattr(parent, '_overlay_windows'):
+            parent._overlay_windows = []
+        parent._overlay_windows.append(overlay)
+        return
+
+    # --- Режим popup (дефолтные значения) ---
+    html_content = format_translation_html(translated_text, text_color)
+
+    # --- Режим popup (по умолчанию) ---
     dialog = QDialog(parent)
     dialog.setWindowTitle(" ")
     dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
     dialog.setWindowIcon(QIcon(resource_path("icons/icon.png")))
 
-    # Максимальная высота — 75% экрана
     screen = QApplication.primaryScreen().geometry()
     max_height = int(screen.height() * 0.75)
 
-    # Стили для тем
     if theme == "Темная":
-        bg_color, text_color = "#121212", "#ffffff"
+        bg_color = "#121212"
         btn_bg, btn_border, btn_hover = "#1e1e1e", "#550000", "#333333"
         scroll_bg, scroll_handle, scroll_hover = "#1e1e1e", "#555555", "#777777"
     else:
-        bg_color, text_color = "#ffffff", "#000000"
+        bg_color = "#ffffff"
         btn_bg, btn_border, btn_hover = "#f0f0f0", "#cccccc", "#e0e0e0"
         scroll_bg, scroll_handle, scroll_hover = "#f0f0f0", "#cccccc", "#aaaaaa"
 
@@ -1565,7 +1778,6 @@ def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', 
     layout.setContentsMargins(15, 15, 15, 15)
     layout.setSpacing(15)
 
-    # Текстовый виджет с прокруткой
     text_browser = QTextBrowser()
     text_browser.setReadOnly(True)
     text_browser.setOpenExternalLinks(False)
@@ -1585,62 +1797,7 @@ def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', 
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
     """)
-
-    # Форматируем текст в HTML с абзацами (OCR-эвристика)
-    # Если строка короче 75% от медианной длины — это конец абзаца
-    import html as html_module
-    normalized_text = translated_text.replace('\r\n', '\n').strip()
-    lines = normalized_text.split('\n')
-
-    # Вычисляем медианную длину строки
-    non_empty_lens = [len(line.strip()) for line in lines if line.strip()]
-    if not non_empty_lens:
-        text_browser.setHtml('')
-    else:
-        sorted_lens = sorted(non_empty_lens)
-        median_len = sorted_lens[len(sorted_lens) // 2]
-        threshold = median_len * 0.75
-
-        paragraphs = []
-        current_para = []
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                # Пустая строка — разделитель абзацев
-                if current_para:
-                    paragraphs.append(' '.join(current_para))
-                    current_para = []
-                continue
-
-            current_para.append(stripped)
-
-            # Короткая строка — конец абзаца
-            if len(stripped) < threshold:
-                paragraphs.append(' '.join(current_para))
-                current_para = []
-
-        if current_para:
-            paragraphs.append(' '.join(current_para))
-
-        # Собираем HTML
-        html_parts = []
-        for p in paragraphs:
-            if p:
-                escaped = html_module.escape(p)
-                html_parts.append(f'<p style="margin: 10px 0; line-height: 1.6; text-indent: 20px;">{escaped}</p>')
-
-        html_content = f'''
-        <div style="
-            font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 15px;
-            color: {text_color};
-            padding: 12px 16px;
-        ">
-            {''.join(html_parts)}
-        </div>
-        '''
-        text_browser.setHtml(html_content)
+    text_browser.setHtml(html_content)
     layout.addWidget(text_browser)
 
     # Кнопки
