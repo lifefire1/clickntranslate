@@ -24,7 +24,7 @@ import webbrowser
 
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, QComboBox,
-                             QWidget, QPushButton, QSystemTrayIcon, QMenu, QMessageBox, QLineEdit, QTextEdit, QDialog, QHBoxLayout, QCheckBox, QSpacerItem, QSizePolicy, QProgressDialog)
+                             QWidget, QPushButton, QSystemTrayIcon, QMenu, QMessageBox, QLineEdit, QTextEdit, QTextBrowser, QDialog, QHBoxLayout, QCheckBox, QSpacerItem, QSizePolicy, QProgressDialog)
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QIcon
 from settings_window import SettingsWindow
@@ -1540,43 +1540,117 @@ class DarkThemeApp(QMainWindow):
 
 # --- Универсальный диалог перевода ---
 def show_translation_dialog(parent, translated_text, auto_copy=True, lang='ru', theme='Темная'):
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(" ")
+    dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+    dialog.setWindowIcon(QIcon(resource_path("icons/icon.png")))
+
+    # Максимальная высота — 75% экрана
+    screen = QApplication.primaryScreen().geometry()
+    max_height = int(screen.height() * 0.75)
+
+    # Стили для тем
     if theme == "Темная":
-        style = (
-            "QMessageBox { background-color: #121212; color: #ffffff; } "
-            "QLabel { color: #ffffff; font-size: 18px; } "
-            "QPushButton { background-color: #1e1e1e; color: #ffffff; border: 1px solid #550000; padding: 5px; min-width: 80px; } "
-            "QPushButton:hover { background-color: #333333; }"
-        )
+        bg_color, text_color = "#121212", "#ffffff"
+        btn_bg, btn_border, btn_hover = "#1e1e1e", "#550000", "#333333"
+        scroll_bg, scroll_handle, scroll_hover = "#1e1e1e", "#555555", "#777777"
     else:
-        style = (
-            "QMessageBox { background-color: #ffffff; color: #000000; } "
-            "QLabel { color: #000000; font-size: 18px; } "
-            "QPushButton { background-color: #f0f0f0; color: #000000; border: 1px solid #cccccc; padding: 5px; min-width: 80px; } "
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
+        bg_color, text_color = "#ffffff", "#000000"
+        btn_bg, btn_border, btn_hover = "#f0f0f0", "#cccccc", "#e0e0e0"
+        scroll_bg, scroll_handle, scroll_hover = "#f0f0f0", "#cccccc", "#aaaaaa"
+
+    dialog.setStyleSheet(f"QDialog {{ background-color: {bg_color}; }}")
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(15, 15, 15, 15)
+    layout.setSpacing(15)
+
+    # Текстовый виджет с прокруткой
+    text_browser = QTextBrowser()
+    text_browser.setPlainText(translated_text)
+    text_browser.setReadOnly(True)
+    text_browser.setOpenExternalLinks(False)
+    text_browser.setStyleSheet(f"""
+        QTextBrowser {{
+            background-color: {bg_color}; color: {text_color};
+            font-size: 18px; border: none; padding: 5px;
+        }}
+        QScrollBar:vertical {{
+            background: {scroll_bg}; width: 12px; border-radius: 6px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {scroll_handle}; border-radius: 6px; min-height: 30px;
+        }}
+        QScrollBar::handle:vertical:hover {{ background: {scroll_hover}; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+    """)
+    layout.addWidget(text_browser)
+
+    # Кнопки
+    button_style = f"""
+        QPushButton {{
+            background-color: {btn_bg}; color: {text_color};
+            border: 1px solid {btn_border}; padding: 8px 16px; min-width: 80px;
+        }}
+        QPushButton:hover {{ background-color: {btn_hover}; }}
+    """
+
     copy_text = "Copy" if lang == "en" else "Копировать"
     close_text = "Close" if lang == "en" else "Закрыть"
     google_text = "Google" if lang == "en" else "Гугл"
-    msg = QMessageBox(parent)
-    msg.setWindowTitle(" ")
-    msg.setText(translated_text)
+
+    button_layout = QHBoxLayout()
+    button_layout.addStretch()
+
+    copy_button = None
     if not auto_copy:
-        copy_button = msg.addButton(copy_text, QMessageBox.ActionRole)
-    google_button = msg.addButton(google_text, QMessageBox.ActionRole)
-    close_button = msg.addButton(close_text, QMessageBox.RejectRole)
-    msg.setStyleSheet(style)
-    msg.setWindowFlags(msg.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
-    msg.setWindowIcon(QIcon(resource_path("icons/icon.png")))
-    msg.setIcon(QMessageBox.NoIcon)
+        copy_button = QPushButton(copy_text)
+        copy_button.setStyleSheet(button_style)
+        button_layout.addWidget(copy_button)
+
+    google_button = QPushButton(google_text)
+    google_button.setStyleSheet(button_style)
+    button_layout.addWidget(google_button)
+
+    close_button = QPushButton(close_text)
+    close_button.setStyleSheet(button_style)
+    button_layout.addWidget(close_button)
+
+    layout.addLayout(button_layout)
+
     if auto_copy:
         pyperclip.copy(translated_text)
-        # save_copy_history вызывается в вызывающем коде
+
+    # Вычисляем размер окна по контенту
+    text_browser.document().setTextWidth(500)
+    doc_height = int(text_browser.document().size().height())
+    dialog_height = min(doc_height + 100, max_height)  # +100 для кнопок и отступов
+    dialog_height = max(dialog_height, 150)
+
+    dialog.setFixedWidth(550)
+    dialog.setMinimumHeight(150)
+    dialog.setMaximumHeight(max_height)
+    dialog.resize(550, dialog_height)
+
+    # Обработчики кнопок
+    action = {"google": False}
+
+    def on_copy():
+        pyperclip.copy(translated_text)
+
+    def on_google():
+        action["google"] = True
+        dialog.accept()
+
+    if copy_button:
+        copy_button.clicked.connect(on_copy)
+    google_button.clicked.connect(on_google)
+    close_button.clicked.connect(dialog.reject)
+
     while True:
-        clicked = msg.exec_()
-        if not auto_copy and msg.clickedButton() == copy_button:
-            pyperclip.copy(translated_text)
-            # save_copy_history вызывается в вызывающем коде
-        elif msg.clickedButton() == google_button:
+        dialog.exec_()
+        if action["google"]:
             url = "https://www.google.com/search?q=" + urllib.parse.quote(translated_text)
             webbrowser.open(url)
             break

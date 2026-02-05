@@ -19,8 +19,9 @@ def get_log_path():
 _debug_log_path = get_log_path()
 
 def debug_log(msg):
-    """Debug logging disabled for production."""
-    pass  # Логирование отключено для production
+    """Debug logging для диагностики."""
+    with open(_debug_log_path, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now().isoformat()}] {msg}\n")
 
 # Инициализация (логирование отключено)
 
